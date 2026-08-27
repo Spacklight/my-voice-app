@@ -11,10 +11,11 @@ function App() {
   const [isHost, setIsHost] = useState(false);
 
   // PDF state
-  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
+  const [pdfInputUrl, setPdfInputUrl] = useState('');
 
   // WebRTC refs
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -58,25 +59,21 @@ function App() {
           console.log('Joined room:', data.room);
           setIsHost(data.isHost);
           setJoined(true);
+          // If host, set default PDF URL
+          if (data.isHost) {
+            const defaultUrl = 'https://spacklight.github.io/Documents/index.pdf';
+            setPdfUrl(defaultUrl);
+            // Broadcast to participants
+            ws.send(JSON.stringify({
+              type: 'pdf_url',
+              url: defaultUrl,
+            }));
+          }
         }
 
-        if (data.type === 'pdf_upload') {
-          console.log('Received PDF from host');
-          // Convert base64 to Blob and create URL
-          try {
-            const base64 = data.dataUrl.split(',')[1];
-            const binary = atob(base64);
-            const array = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-              array[i] = binary.charCodeAt(i);
-            }
-            const blob = new Blob([array], { type: 'application/pdf' });
-            const blobUrl = URL.createObjectURL(blob);
-            setPdfBlobUrl(blobUrl);
-          } catch (err) {
-            console.error('Failed to load PDF from host:', err);
-            setError('Failed to load PDF from host');
-          }
+        if (data.type === 'pdf_url') {
+          console.log('Received PDF URL from host:', data.url);
+          setPdfUrl(data.url);
         }
 
         if (data.type === 'peer_joined') {
@@ -195,42 +192,38 @@ function App() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-    // Revoke PDF object URL to free memory
-    if (pdfBlobUrl) {
-      URL.revokeObjectURL(pdfBlobUrl);
-      setPdfBlobUrl(null);
-    }
+    // Optionally clear PDF
+    setPdfUrl(null);
   };
 
-  const handlePdfUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    // Check file size (max 900 KB to stay safely under 1 MB WebSocket limit)
-    if (file.size > 1.5 * 1024 * 1024) {
-      setError('PDF file is too large (max 1.5 MB)');
+  const handleSetPdfUrl = () => {
+    if (!pdfInputUrl.trim()) {
+      setError('Please enter a valid PDF URL');
       return;
     }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const dataUrl = e.target?.result as string;
-      // Create blob URL for local preview
-      const blobUrl = URL.createObjectURL(file);
-      setPdfBlobUrl(blobUrl);
-      // Send to all participants
-      if (wsRef.current) {
-        wsRef.current.send(JSON.stringify({
-          type: 'pdf_upload',
-          dataUrl: dataUrl,
-        }));
-      }
-    };
-    reader.readAsDataURL(file);
+    // Basic validation: must start with http
+    if (!pdfInputUrl.startsWith('http://') && !pdfInputUrl.startsWith('https://')) {
+      setError('URL must start with http:// or https://');
+      return;
+    }
+    setPdfUrl(pdfInputUrl);
+    // Send to participants
+    if (wsRef.current) {
+      wsRef.current.send(JSON.stringify({
+        type: 'pdf_url',
+        url: pdfInputUrl,
+      }));
+    }
+    setError('');
   };
 
   const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
+  };
+
+  const onDocumentLoadError = (error: any) => {
+    console.error('PDF load error:', error);
+    setError('Failed to load PDF. Check the URL and ensure it is publicly accessible.');
   };
 
   const onPageChange = (page: number) => {
@@ -355,29 +348,36 @@ function App() {
         </button>
       </div>
 
+      {/* Host: Set PDF URL */}
       {isHost && (
-        <div style={{ marginBottom: '15px' }}>
-          <label
-            htmlFor="pdf-upload"
+        <div style={{ marginBottom: '15px', display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <input
+            type="text"
+            placeholder="Enter PDF URL (e.g., https://example.com/doc.pdf)"
+            value={pdfInputUrl}
+            onChange={(e) => setPdfInputUrl(e.target.value)}
             style={{
-              display: 'inline-block',
+              flex: 1,
+              padding: '10px',
+              fontSize: '14px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+            }}
+          />
+          <button
+            onClick={handleSetPdfUrl}
+            style={{
               padding: '10px 20px',
               background: '#1976d2',
               color: 'white',
+              border: 'none',
               borderRadius: '4px',
               cursor: 'pointer',
             }}
           >
-            Upload PDF
-          </label>
-          <input
-            id="pdf-upload"
-            type="file"
-            accept="application/pdf"
-            onChange={handlePdfUpload}
-            style={{ display: 'none' }}
-          />
-          {pdfBlobUrl && <span style={{ marginLeft: '10px', color: '#388e3c' }}>✅ PDF loaded</span>}
+            Load PDF
+          </button>
+          {pdfUrl && <span style={{ marginLeft: '10px', color: '#388e3c' }}>✅ PDF loaded</span>}
         </div>
       )}
 
@@ -400,11 +400,11 @@ function App() {
             alignItems: 'center',
           }}
         >
-          {pdfBlobUrl ? (
+          {pdfUrl ? (
             <Document
-              file={pdfBlobUrl}
+              file={pdfUrl}
               onLoadSuccess={onDocumentLoadSuccess}
-              onLoadError={() => setError('Failed to load PDF file')}
+              onLoadError={onDocumentLoadError}
             >
               <Page
                 pageNumber={pageNumber}
@@ -415,12 +415,12 @@ function App() {
             </Document>
           ) : (
             <p style={{ color: '#999' }}>
-              {isHost ? 'Upload a PDF to start presenting' : 'Waiting for host to upload a PDF...'}
+              {isHost ? 'Enter a PDF URL above to start presenting' : 'Waiting for host to load a PDF...'}
             </p>
           )}
         </div>
 
-        {isHost && pdfBlobUrl && (
+        {isHost && pdfUrl && (
           <div style={{
             position: 'absolute',
             bottom: '20px',

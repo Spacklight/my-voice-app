@@ -4,7 +4,7 @@ export interface Env {
 
 export class RoomDO {
   private roomName: string;
-  private clients: Map<WebSocket, string> = new Map(); // WebSocket -> role
+  private clients: Map<WebSocket, string> = new Map();
   private host: WebSocket | null = null;
 
   constructor(private state: DurableObjectState, env: Env) {
@@ -22,14 +22,12 @@ export class RoomDO {
 
     server.accept();
 
-    // Wait for the first message to identify the role
     let roleReceived = false;
 
     server.addEventListener('message', (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data as string);
 
-        // If this is the first message, it must be a join request
         if (!roleReceived) {
           if (data.type !== 'join' || !data.role) {
             server.send(JSON.stringify({ type: 'error', message: 'First message must be join with role' }));
@@ -42,7 +40,7 @@ export class RoomDO {
 
           if (role === 'host') {
             if (this.host !== null) {
-              server.send(JSON.stringify({ type: 'error', message: 'host already exists' }));
+              server.send(JSON.stringify({ type: 'error', message: 'Host already exists in this room' }));
               server.close();
               return;
             }
@@ -98,14 +96,14 @@ export class RoomDO {
           }
         }
 
-        // PDF upload: only host can send
-        if (data.type === 'pdf_upload') {
+        // PDF URL: only host can send
+        if (data.type === 'pdf_url') {
           if (server === this.host) {
             for (const [clientSocket] of this.clients) {
               if (clientSocket !== server) {
                 clientSocket.send(JSON.stringify({
-                  type: 'pdf_upload',
-                  dataUrl: data.dataUrl,
+                  type: 'pdf_url',
+                  url: data.url,
                 }));
               }
             }
