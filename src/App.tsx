@@ -5,14 +5,13 @@ import './App.css';
 pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 function App() {
-  // UI state
   const [meetingId, setMeetingId] = useState('');
   const [error, setError] = useState('');
   const [joined, setJoined] = useState(false);
   const [isHost, setIsHost] = useState(false);
 
   // PDF state
-  const [pdfDataUrl, setPdfDataUrl] = useState<string | null>(null);
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
@@ -24,7 +23,7 @@ function App() {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
 
-  const joinRoom = useCallback(async () => {
+  const joinRoom = useCallback(async (role: 'host' | 'participant') => {
     if (!meetingId.trim()) {
       setError('Please enter a meeting ID');
       return;
@@ -42,11 +41,18 @@ function App() {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
+        console.log('WebSocket connected, sending join as', role);
+        ws.send(JSON.stringify({ type: 'join', role }));
       };
 
       ws.onmessage = async (event) => {
         const data = JSON.parse(event.data);
+
+        if (data.type === 'error') {
+          setError(data.message);
+          ws.close();
+          return;
+        }
 
         if (data.type === 'joined') {
           console.log('Joined room:', data.room);
@@ -56,7 +62,21 @@ function App() {
 
         if (data.type === 'pdf_upload') {
           console.log('Received PDF from host');
-          setPdfDataUrl(data.dataUrl);
+          // Convert base64 to Blob and create URL
+          try {
+            const base64 = data.dataUrl.split(',')[1];
+            const binary = atob(base64);
+            const array = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              array[i] = binary.charCodeAt(i);
+            }
+            const blob = new Blob([array], { type: 'application/pdf' });
+            const blobUrl = URL.createObjectURL(blob);
+            setPdfBlobUrl(blobUrl);
+          } catch (err) {
+            console.error('Failed to load PDF from host:', err);
+            setError('Failed to load PDF from host');
+          }
         }
 
         if (data.type === 'peer_joined') {
@@ -175,16 +195,29 @@ function App() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
+    // Revoke PDF object URL to free memory
+    if (pdfBlobUrl) {
+      URL.revokeObjectURL(pdfBlobUrl);
+      setPdfBlobUrl(null);
+    }
   };
 
   const handlePdfUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    // Check file size (max 900 KB to stay safely under 1 MB WebSocket limit)
+    if (file.size > 900 * 1024) {
+      setError('PDF file is too large (max 900 KB)');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
-      setPdfDataUrl(dataUrl);
+      // Create blob URL for local preview
+      const blobUrl = URL.createObjectURL(file);
+      setPdfBlobUrl(blobUrl);
       // Send to all participants
       if (wsRef.current) {
         wsRef.current.send(JSON.stringify({
@@ -262,7 +295,7 @@ function App() {
 
         <div style={{ display: 'flex', gap: '10px' }}>
           <button
-            onClick={joinRoom}
+            onClick={() => joinRoom('host')}
             style={{
               flex: 1,
               padding: '12px',
@@ -277,7 +310,7 @@ function App() {
             Host Meeting
           </button>
           <button
-            onClick={joinRoom}
+            onClick={() => joinRoom('participant')}
             style={{
               flex: 1,
               padding: '12px',
@@ -322,7 +355,6 @@ function App() {
         </button>
       </div>
 
-      {/* PDF Upload for host */}
       {isHost && (
         <div style={{ marginBottom: '15px' }}>
           <label
@@ -345,7 +377,7 @@ function App() {
             onChange={handlePdfUpload}
             style={{ display: 'none' }}
           />
-          {pdfDataUrl && <span style={{ marginLeft: '10px', color: '#388e3c' }}>✅ PDF loaded</span>}
+          {pdfBlobUrl && <span style={{ marginLeft: '10px', color: '#388e3c' }}>✅ PDF loaded</span>}
         </div>
       )}
 
@@ -368,10 +400,11 @@ function App() {
             alignItems: 'center',
           }}
         >
-          {pdfDataUrl ? (
+          {pdfBlobUrl ? (
             <Document
-              file={pdfDataUrl}
+              file={pdfBlobUrl}
               onLoadSuccess={onDocumentLoadSuccess}
+              onLoadError={() => setError('Failed to load PDF file')}
             >
               <Page
                 pageNumber={pageNumber}
@@ -387,7 +420,7 @@ function App() {
           )}
         </div>
 
-        {isHost && pdfDataUrl && (
+        {isHost && pdfBlobUrl && (
           <div style={{
             position: 'absolute',
             bottom: '20px',

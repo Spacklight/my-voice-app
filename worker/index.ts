@@ -4,7 +4,7 @@ export interface Env {
 
 export class RoomDO {
   private roomName: string;
-  private clients: Set<WebSocket> = new Set();
+  private clients: Map<WebSocket, string> = new Map(); // WebSocket -> role
   private host: WebSocket | null = null;
 
   constructor(private state: DurableObjectState, env: Env) {
@@ -21,43 +21,87 @@ export class RoomDO {
     const [client, server] = Object.values(pair);
 
     server.accept();
-    this.clients.add(server);
 
-    const isHost = this.host === null;
-    if (isHost) {
-      this.host = server;
-    }
-
-    server.send(JSON.stringify({
-      type: 'joined',
-      room: this.roomName,
-      isHost: isHost,
-    }));
-
-    // Notify existing clients that a new peer joined
-    for (const clientSocket of this.clients) {
-      if (clientSocket !== server) {
-        clientSocket.send(JSON.stringify({ type: 'peer_joined' }));
-      }
-    }
+    // Wait for the first message to identify the role
+    let roleReceived = false;
 
     server.addEventListener('message', (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data as string);
 
+        // If this is the first message, it must be a join request
+        if (!roleReceived) {
+          if (data.type !== 'join' || !data.role) {
+            server.send(JSON.stringify({ type: 'error', message: 'First message must be join with role' }));
+            server.close();
+            return;
+          }
+
+          const role = data.role;
+          roleReceived = true;
+
+          if (role === 'host') {
+            if (this.host !== null) {
+              server.send(JSON.stringify({ type: 'error', message: 'host already exists' }));
+              server.close();
+              return;
+            }
+            this.host = server;
+            this.clients.set(server, 'host');
+            server.send(JSON.stringify({
+              type: 'joined',
+              room: this.roomName,
+              isHost: true,
+            }));
+            // Notify existing clients that a host joined
+            for (const [clientSocket] of this.clients) {
+              if (clientSocket !== server) {
+                clientSocket.send(JSON.stringify({ type: 'peer_joined' }));
+              }
+            }
+            return;
+          }
+
+          if (role === 'participant') {
+            if (this.host === null) {
+              server.send(JSON.stringify({ type: 'error', message: 'incorrect meeting id or host not available' }));
+              server.close();
+              return;
+            }
+            this.clients.set(server, 'participant');
+            server.send(JSON.stringify({
+              type: 'joined',
+              room: this.roomName,
+              isHost: false,
+            }));
+            // Notify other clients that a participant joined
+            for (const [clientSocket] of this.clients) {
+              if (clientSocket !== server) {
+                clientSocket.send(JSON.stringify({ type: 'peer_joined' }));
+              }
+            }
+            return;
+          }
+
+          server.send(JSON.stringify({ type: 'error', message: 'Invalid role' }));
+          server.close();
+          return;
+        }
+
+        // Regular messages after join
         // WebRTC signaling
         if (['offer', 'answer', 'ice-candidate'].includes(data.type)) {
-          for (const clientSocket of this.clients) {
+          for (const [clientSocket] of this.clients) {
             if (clientSocket !== server) {
               clientSocket.send(JSON.stringify(data));
             }
           }
         }
 
-        // PDF upload: only host can send, relay to all others
+        // PDF upload: only host can send
         if (data.type === 'pdf_upload') {
           if (server === this.host) {
-            for (const clientSocket of this.clients) {
+            for (const [clientSocket] of this.clients) {
               if (clientSocket !== server) {
                 clientSocket.send(JSON.stringify({
                   type: 'pdf_upload',
@@ -71,7 +115,7 @@ export class RoomDO {
         // Viewport sync: only host can send
         if (data.type === 'viewport') {
           if (server === this.host) {
-            for (const clientSocket of this.clients) {
+            for (const [clientSocket] of this.clients) {
               if (clientSocket !== server) {
                 clientSocket.send(JSON.stringify({
                   type: 'viewport',
@@ -86,9 +130,12 @@ export class RoomDO {
         if (data.type === 'host_leaving') {
           if (server === this.host) {
             this.host = null;
-            for (const clientSocket of this.clients) {
-              if (clientSocket !== server) {
+            this.clients.delete(server);
+            // Find a new host (first participant becomes host)
+            for (const [clientSocket, role] of this.clients) {
+              if (role === 'participant') {
                 this.host = clientSocket;
+                this.clients.set(clientSocket, 'host');
                 clientSocket.send(JSON.stringify({ type: 'become_host' }));
                 break;
               }
@@ -104,13 +151,17 @@ export class RoomDO {
       this.clients.delete(server);
       if (server === this.host) {
         this.host = null;
-        for (const clientSocket of this.clients) {
-          this.host = clientSocket;
-          clientSocket.send(JSON.stringify({ type: 'become_host' }));
-          break;
+        // Find a new host
+        for (const [clientSocket, role] of this.clients) {
+          if (role === 'participant') {
+            this.host = clientSocket;
+            this.clients.set(clientSocket, 'host');
+            clientSocket.send(JSON.stringify({ type: 'become_host' }));
+            break;
+          }
         }
       }
-      for (const clientSocket of this.clients) {
+      for (const [clientSocket] of this.clients) {
         clientSocket.send(JSON.stringify({ type: 'peer_left' }));
       }
     });
