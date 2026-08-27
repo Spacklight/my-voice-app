@@ -12,6 +12,7 @@ function App() {
   const [isHost, setIsHost] = useState(false);
 
   // PDF state
+  const [pdfDataUrl, setPdfDataUrl] = useState<string | null>(null);
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
@@ -22,8 +23,6 @@ function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
-
-  const pdfUrl = 'https://raw.githubusercontent.com/mozilla/pdf.js/ba2edeae/web/compressed.tracemonkey-pldi-09.pdf';
 
   const joinRoom = useCallback(async () => {
     if (!meetingId.trim()) {
@@ -53,6 +52,11 @@ function App() {
           console.log('Joined room:', data.room);
           setIsHost(data.isHost);
           setJoined(true);
+        }
+
+        if (data.type === 'pdf_upload') {
+          console.log('Received PDF from host');
+          setPdfDataUrl(data.dataUrl);
         }
 
         if (data.type === 'peer_joined') {
@@ -171,6 +175,25 @@ function App() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
+  };
+
+  const handlePdfUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target?.result as string;
+      setPdfDataUrl(dataUrl);
+      // Send to all participants
+      if (wsRef.current) {
+        wsRef.current.send(JSON.stringify({
+          type: 'pdf_upload',
+          dataUrl: dataUrl,
+        }));
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
@@ -299,6 +322,33 @@ function App() {
         </button>
       </div>
 
+      {/* PDF Upload for host */}
+      {isHost && (
+        <div style={{ marginBottom: '15px' }}>
+          <label
+            htmlFor="pdf-upload"
+            style={{
+              display: 'inline-block',
+              padding: '10px 20px',
+              background: '#1976d2',
+              color: 'white',
+              borderRadius: '4px',
+              cursor: 'pointer',
+            }}
+          >
+            Upload PDF
+          </label>
+          <input
+            id="pdf-upload"
+            type="file"
+            accept="application/pdf"
+            onChange={handlePdfUpload}
+            style={{ display: 'none' }}
+          />
+          {pdfDataUrl && <span style={{ marginLeft: '10px', color: '#388e3c' }}>✅ PDF loaded</span>}
+        </div>
+      )}
+
       <div style={{
         border: '1px solid #ddd',
         borderRadius: '8px',
@@ -318,20 +368,26 @@ function App() {
             alignItems: 'center',
           }}
         >
-          <Document
-            file={pdfUrl}
-            onLoadSuccess={onDocumentLoadSuccess}
-          >
-            <Page
-              pageNumber={pageNumber}
-              scale={scale}
-              renderTextLayer={false}
-              renderAnnotationLayer={false}
-            />
-          </Document>
+          {pdfDataUrl ? (
+            <Document
+              file={pdfDataUrl}
+              onLoadSuccess={onDocumentLoadSuccess}
+            >
+              <Page
+                pageNumber={pageNumber}
+                scale={scale}
+                renderTextLayer={false}
+                renderAnnotationLayer={false}
+              />
+            </Document>
+          ) : (
+            <p style={{ color: '#999' }}>
+              {isHost ? 'Upload a PDF to start presenting' : 'Waiting for host to upload a PDF...'}
+            </p>
+          )}
         </div>
 
-        {isHost && (
+        {isHost && pdfDataUrl && (
           <div style={{
             position: 'absolute',
             bottom: '20px',

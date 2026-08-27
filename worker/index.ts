@@ -23,13 +23,11 @@ export class RoomDO {
     server.accept();
     this.clients.add(server);
 
-    // If no host exists, this client becomes the host
     const isHost = this.host === null;
     if (isHost) {
       this.host = server;
     }
 
-    // Send joined message with host status
     server.send(JSON.stringify({
       type: 'joined',
       room: this.roomName,
@@ -40,10 +38,6 @@ export class RoomDO {
     for (const clientSocket of this.clients) {
       if (clientSocket !== server) {
         clientSocket.send(JSON.stringify({ type: 'peer_joined' }));
-        // If the new client is not the host, send them the host's current viewport
-        if (!isHost && this.host) {
-          // We'll send the host's viewport later when we receive it
-        }
       }
     }
 
@@ -51,7 +45,7 @@ export class RoomDO {
       try {
         const data = JSON.parse(event.data as string);
 
-        // Handle WebRTC signaling (offer, answer, ice-candidate)
+        // WebRTC signaling
         if (['offer', 'answer', 'ice-candidate'].includes(data.type)) {
           for (const clientSocket of this.clients) {
             if (clientSocket !== server) {
@@ -60,10 +54,23 @@ export class RoomDO {
           }
         }
 
-        // Handle viewport sync: only host can send viewport updates
+        // PDF upload: only host can send, relay to all others
+        if (data.type === 'pdf_upload') {
+          if (server === this.host) {
+            for (const clientSocket of this.clients) {
+              if (clientSocket !== server) {
+                clientSocket.send(JSON.stringify({
+                  type: 'pdf_upload',
+                  dataUrl: data.dataUrl,
+                }));
+              }
+            }
+          }
+        }
+
+        // Viewport sync: only host can send
         if (data.type === 'viewport') {
           if (server === this.host) {
-            // Broadcast viewport to all other clients
             for (const clientSocket of this.clients) {
               if (clientSocket !== server) {
                 clientSocket.send(JSON.stringify({
@@ -75,11 +82,10 @@ export class RoomDO {
           }
         }
 
-        // Handle host leaving: reassign host to the next client
+        // Host leaving
         if (data.type === 'host_leaving') {
           if (server === this.host) {
             this.host = null;
-            // Find a new host
             for (const clientSocket of this.clients) {
               if (clientSocket !== server) {
                 this.host = clientSocket;
@@ -98,7 +104,6 @@ export class RoomDO {
       this.clients.delete(server);
       if (server === this.host) {
         this.host = null;
-        // Find a new host
         for (const clientSocket of this.clients) {
           this.host = clientSocket;
           clientSocket.send(JSON.stringify({ type: 'become_host' }));
