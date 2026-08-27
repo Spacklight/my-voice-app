@@ -25,7 +25,7 @@ function App() {
 
   const pdfUrl = 'https://raw.githubusercontent.com/mozilla/pdf.js/ba2edeae/web/compressed.tracemonkey-pldi-09.pdf';
 
-  const joinRoom = useCallback(async (mode: 'host' | 'join') => {
+  const joinRoom = useCallback(async () => {
     if (!meetingId.trim()) {
       setError('Please enter a meeting ID');
       return;
@@ -239,7 +239,7 @@ function App() {
 
         <div style={{ display: 'flex', gap: '10px' }}>
           <button
-            onClick={() => joinRoom('host')}
+            onClick={joinRoom}
             style={{
               flex: 1,
               padding: '12px',
@@ -254,7 +254,7 @@ function App() {
             Host Meeting
           </button>
           <button
-            onClick={() => joinRoom('join')}
+            onClick={joinRoom}
             style={{
               flex: 1,
               padding: '12px',
