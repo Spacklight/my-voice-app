@@ -6,6 +6,20 @@
         "directory": "dist",
         "not_found_handling": "single-page-application"
     },
+    "durable_objects": {
+        "bindings": [
+            {
+                "name": "ROOM_DO",
+                "class_name": "RoomDO"
+            }
+        ]
+    },
+    "migrations": [
+        {
+            "tag": "v1",
+            "new_classes": ["RoomDO"]
+        }
+    ],
     "observability": {
         "enabled": true
     }

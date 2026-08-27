@@ -17,11 +17,12 @@ function App() {
       localVideoRef.current.srcObject = stream;
     }
 
-    const ws = new WebSocket(`wss://${window.location.host}/ws`);
+    // Connect to WebSocket with room name in the URL
+    const ws = new WebSocket(`wss://${window.location.host}/ws?room=${encodeURIComponent(room)}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: 'join', room }));
+      console.log('WebSocket connected');
     };
 
     ws.onmessage = async (event) => {
@@ -33,13 +34,24 @@ function App() {
       }
 
       if (data.type === 'peer_joined') {
+        console.log('Peer joined');
         await createPeerConnection(stream);
         const offer = await pcRef.current!.createOffer();
         await pcRef.current!.setLocalDescription(offer);
         ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
       }
 
+      if (data.type === 'peer_left') {
+        console.log('Peer left');
+        pcRef.current?.close();
+        pcRef.current = null;
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = null;
+        }
+      }
+
       if (data.type === 'offer') {
+        console.log('Received offer');
         await createPeerConnection(stream);
         await pcRef.current!.setRemoteDescription({ type: 'offer', sdp: data.sdp });
         const answer = await pcRef.current!.createAnswer();
@@ -48,10 +60,12 @@ function App() {
       }
 
       if (data.type === 'answer') {
+        console.log('Received answer');
         await pcRef.current!.setRemoteDescription({ type: 'answer', sdp: data.sdp });
       }
 
       if (data.type === 'ice-candidate') {
+        console.log('Received ICE candidate');
         if (pcRef.current) {
           await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
         }
@@ -61,6 +75,12 @@ function App() {
     ws.onclose = () => {
       console.log('WebSocket closed');
       setJoined(false);
+      pcRef.current?.close();
+      pcRef.current = null;
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
     };
   }, [room]);
 
@@ -68,6 +88,8 @@ function App() {
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
       ],
     });
     pcRef.current = pc;
@@ -77,6 +99,7 @@ function App() {
     });
 
     pc.ontrack = (event) => {
+      console.log('Received remote track');
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
       }
@@ -84,11 +107,16 @@ function App() {
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        console.log('Sending ICE candidate');
         wsRef.current?.send(JSON.stringify({
           type: 'ice-candidate',
           candidate: event.candidate,
         }));
       }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log('ICE connection state:', pc.iceConnectionState);
     };
 
     return pc;
