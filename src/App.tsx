@@ -12,13 +12,11 @@ function App() {
   const joinRoom = useCallback(async () => {
     if (!room) return;
 
-    // Get local media
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = stream;
     }
 
-    // Connect to WebSocket
     const ws = new WebSocket(`wss://${window.location.host}/ws`);
     wsRef.current = ws;
 
@@ -35,7 +33,6 @@ function App() {
       }
 
       if (data.type === 'peer_joined') {
-        // Create a peer connection and send an offer
         await createPeerConnection(stream);
         const offer = await pcRef.current!.createOffer();
         await pcRef.current!.setLocalDescription(offer);
