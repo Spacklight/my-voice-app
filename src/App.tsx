@@ -62,7 +62,9 @@ function App() {
           // If host, set default PDF URL
           if (data.isHost) {
             const defaultUrl = 'https://spacklight.github.io/Documents/index.pdf';
-            setPdfUrl(defaultUrl);
+            // Use proxy URL
+            const proxyUrl = `/proxy/pdf?url=${encodeURIComponent(defaultUrl)}`;
+            setPdfUrl(proxyUrl);
             // Broadcast to participants
             ws.send(JSON.stringify({
               type: 'pdf_url',
@@ -73,7 +75,9 @@ function App() {
 
         if (data.type === 'pdf_url') {
           console.log('Received PDF URL from host:', data.url);
-          setPdfUrl(data.url);
+          // Use proxy URL
+          const proxyUrl = `/proxy/pdf?url=${encodeURIComponent(data.url)}`;
+          setPdfUrl(proxyUrl);
         }
 
         if (data.type === 'peer_joined') {
@@ -192,7 +196,6 @@ function App() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-    // Optionally clear PDF
     setPdfUrl(null);
   };
 
@@ -201,12 +204,13 @@ function App() {
       setError('Please enter a valid PDF URL');
       return;
     }
-    // Basic validation: must start with http
     if (!pdfInputUrl.startsWith('http://') && !pdfInputUrl.startsWith('https://')) {
       setError('URL must start with http:// or https://');
       return;
     }
-    setPdfUrl(pdfInputUrl);
+    // Use proxy URL
+    const proxyUrl = `/proxy/pdf?url=${encodeURIComponent(pdfInputUrl)}`;
+    setPdfUrl(proxyUrl);
     // Send to participants
     if (wsRef.current) {
       wsRef.current.send(JSON.stringify({
@@ -348,7 +352,6 @@ function App() {
         </button>
       </div>
 
-      {/* Host: Set PDF URL */}
       {isHost && (
         <div style={{ marginBottom: '15px', display: 'flex', gap: '10px', alignItems: 'center' }}>
           <input

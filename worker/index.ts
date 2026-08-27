@@ -51,7 +51,6 @@ export class RoomDO {
               room: this.roomName,
               isHost: true,
             }));
-            // Notify existing clients that a host joined
             for (const [clientSocket] of this.clients) {
               if (clientSocket !== server) {
                 clientSocket.send(JSON.stringify({ type: 'peer_joined' }));
@@ -72,7 +71,6 @@ export class RoomDO {
               room: this.roomName,
               isHost: false,
             }));
-            // Notify other clients that a participant joined
             for (const [clientSocket] of this.clients) {
               if (clientSocket !== server) {
                 clientSocket.send(JSON.stringify({ type: 'peer_joined' }));
@@ -87,7 +85,6 @@ export class RoomDO {
         }
 
         // Regular messages after join
-        // WebRTC signaling
         if (['offer', 'answer', 'ice-candidate'].includes(data.type)) {
           for (const [clientSocket] of this.clients) {
             if (clientSocket !== server) {
@@ -96,9 +93,9 @@ export class RoomDO {
           }
         }
 
-        // PDF URL: only host can send
         if (data.type === 'pdf_url') {
           if (server === this.host) {
+            // Store the URL
             for (const [clientSocket] of this.clients) {
               if (clientSocket !== server) {
                 clientSocket.send(JSON.stringify({
@@ -110,7 +107,6 @@ export class RoomDO {
           }
         }
 
-        // Viewport sync: only host can send
         if (data.type === 'viewport') {
           if (server === this.host) {
             for (const [clientSocket] of this.clients) {
@@ -124,12 +120,10 @@ export class RoomDO {
           }
         }
 
-        // Host leaving
         if (data.type === 'host_leaving') {
           if (server === this.host) {
             this.host = null;
             this.clients.delete(server);
-            // Find a new host (first participant becomes host)
             for (const [clientSocket, role] of this.clients) {
               if (role === 'participant') {
                 this.host = clientSocket;
@@ -149,7 +143,6 @@ export class RoomDO {
       this.clients.delete(server);
       if (server === this.host) {
         this.host = null;
-        // Find a new host
         for (const [clientSocket, role] of this.clients) {
           if (role === 'participant') {
             this.host = clientSocket;
@@ -174,6 +167,31 @@ export class RoomDO {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // Proxy endpoint for PDF files
+    if (url.pathname === '/proxy/pdf') {
+      const pdfUrl = url.searchParams.get('url');
+      if (!pdfUrl) {
+        return new Response('Missing url parameter', { status: 400 });
+      }
+
+      try {
+        const response = await fetch(pdfUrl);
+        const blob = await response.blob();
+
+        // Return the PDF with proper headers
+        return new Response(blob, {
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Cache-Control': 'public, max-age=3600',
+          },
+        });
+      } catch (error) {
+        return new Response('Failed to fetch PDF', { status: 500 });
+      }
+    }
 
     if (url.pathname === '/ws') {
       const roomName = url.searchParams.get('room') || 'default';
