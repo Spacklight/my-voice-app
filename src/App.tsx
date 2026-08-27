@@ -1,13 +1,11 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import './App.css';
 
-// Set up PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 function App() {
   // UI state
-  const [mode, setMode] = useState<'host' | 'join' | null>(null);
   const [meetingId, setMeetingId] = useState('');
   const [error, setError] = useState('');
   const [joined, setJoined] = useState(false);
@@ -17,7 +15,6 @@ function App() {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
-  const [scrollTop, setScrollTop] = useState(0);
 
   // WebRTC refs
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -26,7 +23,6 @@ function App() {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
 
-  // Check if a PDF URL is provided
   const pdfUrl = 'https://raw.githubusercontent.com/mozilla/pdf.js/ba2edeae/web/compressed.tracemonkey-pldi-09.pdf';
 
   const joinRoom = useCallback(async (mode: 'host' | 'join') => {
@@ -57,12 +53,6 @@ function App() {
           console.log('Joined room:', data.room);
           setIsHost(data.isHost);
           setJoined(true);
-          setMode(null);
-
-          // If joining as a non-host, request the host's viewport
-          if (!data.isHost) {
-            // The host will send viewport updates automatically
-          }
         }
 
         if (data.type === 'peer_joined') {
@@ -104,11 +94,9 @@ function App() {
         }
 
         if (data.type === 'viewport') {
-          // Apply viewport sync from host
           console.log('Received viewport update:', data.viewport);
           setPageNumber(data.viewport.pageNumber || 1);
           setScale(data.viewport.scale || 1.0);
-          // We'll handle scroll via a ref later
         }
 
         if (data.type === 'become_host') {
@@ -125,8 +113,7 @@ function App() {
         pcRef.current = null;
       };
 
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+      ws.onerror = () => {
         setError('Failed to connect to meeting. Please check your meeting ID.');
       };
     } catch (err) {
@@ -169,7 +156,6 @@ function App() {
   };
 
   const leaveRoom = () => {
-    // If host is leaving, notify others
     if (isHost) {
       wsRef.current?.send(JSON.stringify({ type: 'host_leaving' }));
     }
@@ -187,7 +173,6 @@ function App() {
     }
   };
 
-  // Handle PDF viewport sync (host only)
   const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
   };
@@ -212,7 +197,6 @@ function App() {
     }
   };
 
-  // Render host/join UI
   if (!joined) {
     return (
       <div style={{ padding: '40px', maxWidth: '400px', margin: '0 auto', textAlign: 'center' }}>
@@ -289,7 +273,6 @@ function App() {
     );
   }
 
-  // Meeting UI
   return (
     <div style={{ padding: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
@@ -316,7 +299,6 @@ function App() {
         </button>
       </div>
 
-      {/* PDF Viewer */}
       <div style={{
         border: '1px solid #ddd',
         borderRadius: '8px',
@@ -349,7 +331,6 @@ function App() {
           </Document>
         </div>
 
-        {/* PDF Controls (host only) */}
         {isHost && (
           <div style={{
             position: 'absolute',
@@ -425,7 +406,6 @@ function App() {
         )}
       </div>
 
-      {/* Video (optional) */}
       <div style={{ display: 'flex', gap: '20px' }}>
         <div style={{ flex: 1 }}>
           <h3>You</h3>
