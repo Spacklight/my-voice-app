@@ -207,8 +207,8 @@ function App() {
     if (!file) return;
 
     // Check file size (max 900 KB to stay safely under 1 MB WebSocket limit)
-    if (file.size > 900 * 1024) {
-      setError('PDF file is too large (max 900 KB)');
+    if (file.size > 1.5 * 1024 * 1024) {
+      setError('PDF file is too large (max 1.5 MB)');
       return;
     }
 
