@@ -7,8 +7,12 @@ function App() {
   const [joined, setJoined] = useState(false);
   const [isHost, setIsHost] = useState(false);
 
-  // Text editor state
-  const [textContent, setTextContent] = useState('');
+  // Editor state
+  const [code, setCode] = useState('// Write your C++ code here\n#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Hello, World!" << endl;\n    return 0;\n}');
+  const [output, setOutput] = useState('');
+  const [isRunning, setIsRunning] = useState(false);
+
+  // WebSocket and WebRTC refs
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -53,13 +57,13 @@ function App() {
           setJoined(true);
         }
 
-        // Receive text update from others
+        // Receive code update from others
         if (data.type === 'text_update') {
-          console.log('Received text update');
-          setTextContent(data.content);
+          console.log('Received code update');
+          setCode(data.content);
         }
 
-        // WebRTC signaling (keep for video)
+        // WebRTC signaling
         if (data.type === 'peer_joined') {
           console.log('Peer joined');
           await createPeerConnection(stream);
@@ -157,15 +161,15 @@ function App() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-    setTextContent('');
+    setCode('');
+    setOutput('');
   };
 
-  // Handle text changes with debounce
-  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const newContent = e.target.value;
-    setTextContent(newContent);
+  // Handle code changes with debounce
+  const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newCode = e.target.value;
+    setCode(newCode);
 
-    // Debounce sending updates (300ms)
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
@@ -173,19 +177,49 @@ function App() {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: 'text_update',
-          content: newContent,
+          content: newCode,
         }));
       }
     }, 300);
   };
 
-  const clearText = () => {
-    setTextContent('');
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'text_update',
-        content: '',
-      }));
+  // Run code using Piston API
+  const runCode = async () => {
+    if (!code.trim()) {
+      setOutput('Error: No code to run.');
+      return;
+    }
+
+    setIsRunning(true);
+    setOutput('Running...');
+
+    try {
+      const response = await fetch('https://emkc.org/api/v2/piston/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          language: 'cpp',
+          version: '10.2.0', // or 'latest'
+          files: [{ content: code }],
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.run) {
+        const stdout = result.run.stdout || '';
+        const stderr = result.run.stderr || '';
+        const outputText = (stdout + stderr).trim() || '(No output)';
+        setOutput(outputText);
+      } else if (result.message) {
+        setOutput(`Error: ${result.message}`);
+      } else {
+        setOutput('Error: Unexpected response from compiler service.');
+      }
+    } catch (err) {
+      setOutput(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setIsRunning(false);
     }
   };
 
@@ -193,7 +227,7 @@ function App() {
   if (!joined) {
     return (
       <div style={{ padding: '40px', maxWidth: '400px', margin: '0 auto', textAlign: 'center' }}>
-        <h1>Collaborative Text Editor</h1>
+        <h1>Collaborative C++ Editor</h1>
         <p style={{ marginBottom: '20px', color: '#666' }}>
           Host a meeting or join an existing one
         </p>
@@ -293,44 +327,68 @@ function App() {
         </button>
       </div>
 
-      <div style={{ marginBottom: '10px' }}>
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
         <button
-          onClick={clearText}
+          onClick={runCode}
+          disabled={isRunning}
           style={{
-            padding: '8px 16px',
-            background: '#ff9800',
+            padding: '10px 24px',
+            background: isRunning ? '#ccc' : '#4caf50',
             color: 'white',
             border: 'none',
             borderRadius: '4px',
-            cursor: 'pointer',
+            cursor: isRunning ? 'default' : 'pointer',
+            fontSize: '16px',
           }}
         >
-          Clear Text
+          {isRunning ? 'Running...' : '▶ Run'}
         </button>
-        <span style={{ marginLeft: '15px', fontSize: '14px', color: '#666' }}>
-          {textContent.length} characters
+        <span style={{ fontSize: '14px', color: '#666', alignSelf: 'center' }}>
+          {code.length} characters
         </span>
       </div>
 
-      <textarea
-        value={textContent}
-        onChange={handleTextChange}
-        placeholder="Start typing... All participants will see your changes in real time."
-        style={{
-          width: '100%',
-          height: '400px',
-          padding: '15px',
-          fontSize: '16px',
-          fontFamily: 'monospace',
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+        {/* Editor */}
+        <textarea
+          value={code}
+          onChange={handleCodeChange}
+          placeholder="Write your C++ code here..."
+          style={{
+            width: '100%',
+            height: '350px',
+            padding: '15px',
+            fontSize: '16px',
+            fontFamily: 'monospace',
+            border: '1px solid #ccc',
+            borderRadius: '8px',
+            resize: 'vertical',
+            backgroundColor: '#1e1e1e',
+            color: '#d4d4d4',
+            boxSizing: 'border-box',
+            tabSize: 4,
+          }}
+        />
+
+        {/* Output */}
+        <div style={{
           border: '1px solid #ccc',
           borderRadius: '8px',
-          resize: 'vertical',
-          backgroundColor: '#fff',
-          boxSizing: 'border-box',
-        }}
-      />
+          padding: '12px',
+          backgroundColor: '#f5f5f5',
+          minHeight: '100px',
+          maxHeight: '200px',
+          overflow: 'auto',
+          fontFamily: 'monospace',
+          fontSize: '14px',
+          whiteSpace: 'pre-wrap',
+        }}>
+          <strong>Output:</strong>
+          <pre style={{ margin: '8px 0 0', padding: 0 }}>{output || 'Click "Run" to execute your code.'}</pre>
+        </div>
+      </div>
 
-      {/* Optional video feeds – you can hide these by commenting them out */}
+      {/* Video feeds (optional) */}
       <div style={{ display: 'flex', gap: '20px', marginTop: '20px' }}>
         <div style={{ flex: 1 }}>
           <h3>You</h3>
