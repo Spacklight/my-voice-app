@@ -1,8 +1,5 @@
-import { useState, useRef, useCallback } from 'react';
-import { Document, Page, pdfjs } from 'react-pdf';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import './App.css';
-
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 function App() {
   const [meetingId, setMeetingId] = useState('');
@@ -10,19 +7,13 @@ function App() {
   const [joined, setJoined] = useState(false);
   const [isHost, setIsHost] = useState(false);
 
-  // PDF state
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-  const [numPages, setNumPages] = useState<number | null>(null);
-  const [pageNumber, setPageNumber] = useState(1);
-  const [scale, setScale] = useState(1.0);
-  const [pdfInputUrl, setPdfInputUrl] = useState('');
-
-  // WebRTC refs
-  const localVideoRef = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  // Text editor state
+  const [textContent, setTextContent] = useState('');
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
-  const pdfContainerRef = useRef<HTMLDivElement>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const debounceTimerRef = useRef<number | null>(null);
 
   const joinRoom = useCallback(async (role: 'host' | 'participant') => {
     if (!meetingId.trim()) {
@@ -33,6 +24,7 @@ function App() {
     setError('');
 
     try {
+      // Request camera/microphone (optional)
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
@@ -59,42 +51,21 @@ function App() {
           console.log('Joined room:', data.room);
           setIsHost(data.isHost);
           setJoined(true);
-          // If host, set default PDF URL
-          if (data.isHost) {
-            const defaultUrl = 'https://spacklight.github.io/Documents/index.pdf';
-            // Use proxy URL
-            const proxyUrl = `/proxy/pdf?url=${encodeURIComponent(defaultUrl)}`;
-            setPdfUrl(proxyUrl);
-            // Broadcast to participants
-            ws.send(JSON.stringify({
-              type: 'pdf_url',
-              url: defaultUrl,
-            }));
-          }
         }
 
-        if (data.type === 'pdf_url') {
-          console.log('Received PDF URL from host:', data.url);
-          // Use proxy URL
-          const proxyUrl = `/proxy/pdf?url=${encodeURIComponent(data.url)}`;
-          setPdfUrl(proxyUrl);
+        // Receive text update from others
+        if (data.type === 'text_update') {
+          console.log('Received text update');
+          setTextContent(data.content);
         }
 
+        // WebRTC signaling (keep for video)
         if (data.type === 'peer_joined') {
           console.log('Peer joined');
           await createPeerConnection(stream);
           const offer = await pcRef.current!.createOffer();
           await pcRef.current!.setLocalDescription(offer);
           ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
-        }
-
-        if (data.type === 'peer_left') {
-          console.log('Peer left');
-          pcRef.current?.close();
-          pcRef.current = null;
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = null;
-          }
         }
 
         if (data.type === 'offer') {
@@ -107,25 +78,16 @@ function App() {
         }
 
         if (data.type === 'answer') {
-          console.log('Received answer');
           await pcRef.current!.setRemoteDescription({ type: 'answer', sdp: data.sdp });
         }
 
         if (data.type === 'ice-candidate') {
-          console.log('Received ICE candidate');
           if (pcRef.current) {
             await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
           }
         }
 
-        if (data.type === 'viewport') {
-          console.log('Received viewport update:', data.viewport);
-          setPageNumber(data.viewport.pageNumber || 1);
-          setScale(data.viewport.scale || 1.0);
-        }
-
         if (data.type === 'become_host') {
-          console.log('You are now the host!');
           setIsHost(true);
         }
       };
@@ -162,7 +124,6 @@ function App() {
     });
 
     pc.ontrack = (event) => {
-      console.log('Received remote track');
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
       }
@@ -196,64 +157,43 @@ function App() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-    setPdfUrl(null);
+    setTextContent('');
   };
 
-  const handleSetPdfUrl = () => {
-    if (!pdfInputUrl.trim()) {
-      setError('Please enter a valid PDF URL');
-      return;
+  // Handle text changes with debounce
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newContent = e.target.value;
+    setTextContent(newContent);
+
+    // Debounce sending updates (300ms)
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
     }
-    if (!pdfInputUrl.startsWith('http://') && !pdfInputUrl.startsWith('https://')) {
-      setError('URL must start with http:// or https://');
-      return;
-    }
-    // Use proxy URL
-    const proxyUrl = `/proxy/pdf?url=${encodeURIComponent(pdfInputUrl)}`;
-    setPdfUrl(proxyUrl);
-    // Send to participants
-    if (wsRef.current) {
+    debounceTimerRef.current = setTimeout(() => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'text_update',
+          content: newContent,
+        }));
+      }
+    }, 300);
+  };
+
+  const clearText = () => {
+    setTextContent('');
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
-        type: 'pdf_url',
-        url: pdfInputUrl,
-      }));
-    }
-    setError('');
-  };
-
-  const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
-    setNumPages(numPages);
-  };
-
-  const onDocumentLoadError = (error: any) => {
-    console.error('PDF load error:', error);
-    setError('Failed to load PDF. Check the URL and ensure it is publicly accessible.');
-  };
-
-  const onPageChange = (page: number) => {
-    if (isHost && wsRef.current) {
-      setPageNumber(page);
-      wsRef.current.send(JSON.stringify({
-        type: 'viewport',
-        viewport: { pageNumber: page, scale: scale },
+        type: 'text_update',
+        content: '',
       }));
     }
   };
 
-  const onScaleChange = (newScale: number) => {
-    if (isHost && wsRef.current) {
-      setScale(newScale);
-      wsRef.current.send(JSON.stringify({
-        type: 'viewport',
-        viewport: { pageNumber: pageNumber, scale: newScale },
-      }));
-    }
-  };
-
+  // Join screen
   if (!joined) {
     return (
       <div style={{ padding: '40px', maxWidth: '400px', margin: '0 auto', textAlign: 'center' }}>
-        <h1>PDF Meeting</h1>
+        <h1>Collaborative Text Editor</h1>
         <p style={{ marginBottom: '20px', color: '#666' }}>
           Host a meeting or join an existing one
         </p>
@@ -326,6 +266,7 @@ function App() {
     );
   }
 
+  // Editor screen
   return (
     <div style={{ padding: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
@@ -352,153 +293,45 @@ function App() {
         </button>
       </div>
 
-      {isHost && (
-        <div style={{ marginBottom: '15px', display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <input
-            type="text"
-            placeholder="Enter PDF URL (e.g., https://example.com/doc.pdf)"
-            value={pdfInputUrl}
-            onChange={(e) => setPdfInputUrl(e.target.value)}
-            style={{
-              flex: 1,
-              padding: '10px',
-              fontSize: '14px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-            }}
-          />
-          <button
-            onClick={handleSetPdfUrl}
-            style={{
-              padding: '10px 20px',
-              background: '#1976d2',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-            }}
-          >
-            Load PDF
-          </button>
-          {pdfUrl && <span style={{ marginLeft: '10px', color: '#388e3c' }}>✅ PDF loaded</span>}
-        </div>
-      )}
-
-      <div style={{
-        border: '1px solid #ddd',
-        borderRadius: '8px',
-        overflow: 'hidden',
-        background: '#f5f5f5',
-        marginBottom: '15px',
-        position: 'relative',
-      }}>
-        <div
-          ref={pdfContainerRef}
+      <div style={{ marginBottom: '10px' }}>
+        <button
+          onClick={clearText}
           style={{
-            height: '500px',
-            overflow: 'auto',
-            padding: '20px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
+            padding: '8px 16px',
+            background: '#ff9800',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
           }}
         >
-          {pdfUrl ? (
-            <Document
-              file={pdfUrl}
-              onLoadSuccess={onDocumentLoadSuccess}
-              onLoadError={onDocumentLoadError}
-            >
-              <Page
-                pageNumber={pageNumber}
-                scale={scale}
-                renderTextLayer={false}
-                renderAnnotationLayer={false}
-              />
-            </Document>
-          ) : (
-            <p style={{ color: '#999' }}>
-              {isHost ? 'Enter a PDF URL above to start presenting' : 'Waiting for host to load a PDF...'}
-            </p>
-          )}
-        </div>
-
-        {isHost && pdfUrl && (
-          <div style={{
-            position: 'absolute',
-            bottom: '20px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'rgba(0,0,0,0.7)',
-            padding: '10px 15px',
-            borderRadius: '8px',
-            display: 'flex',
-            gap: '10px',
-            alignItems: 'center',
-            color: 'white',
-          }}>
-            <button
-              onClick={() => onPageChange(Math.max(1, pageNumber - 1))}
-              style={{
-                padding: '5px 12px',
-                background: '#555',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer',
-              }}
-            >
-              Prev
-            </button>
-            <span>
-              Page {pageNumber} of {numPages || '?'}
-            </span>
-            <button
-              onClick={() => onPageChange(Math.min(numPages || 1, pageNumber + 1))}
-              style={{
-                padding: '5px 12px',
-                background: '#555',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer',
-              }}
-            >
-              Next
-            </button>
-            <span style={{ marginLeft: '10px' }}>Zoom:</span>
-            <button
-              onClick={() => onScaleChange(Math.max(0.5, scale - 0.1))}
-              style={{
-                padding: '5px 10px',
-                background: '#555',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer',
-              }}
-            >
-              -
-            </button>
-            <span>{Math.round(scale * 100)}%</span>
-            <button
-              onClick={() => onScaleChange(Math.min(2.0, scale + 0.1))}
-              style={{
-                padding: '5px 10px',
-                background: '#555',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer',
-              }}
-            >
-              +
-            </button>
-          </div>
-        )}
+          Clear Text
+        </button>
+        <span style={{ marginLeft: '15px', fontSize: '14px', color: '#666' }}>
+          {textContent.length} characters
+        </span>
       </div>
 
-      <div style={{ display: 'flex', gap: '20px' }}>
+      <textarea
+        value={textContent}
+        onChange={handleTextChange}
+        placeholder="Start typing... All participants will see your changes in real time."
+        style={{
+          width: '100%',
+          height: '400px',
+          padding: '15px',
+          fontSize: '16px',
+          fontFamily: 'monospace',
+          border: '1px solid #ccc',
+          borderRadius: '8px',
+          resize: 'vertical',
+          backgroundColor: '#fff',
+          boxSizing: 'border-box',
+        }}
+      />
+
+      {/* Optional video feeds – you can hide these by commenting them out */}
+      <div style={{ display: 'flex', gap: '20px', marginTop: '20px' }}>
         <div style={{ flex: 1 }}>
           <h3>You</h3>
           <video ref={localVideoRef} autoPlay muted style={{ width: '100%', maxWidth: '300px', background: '#222' }} />

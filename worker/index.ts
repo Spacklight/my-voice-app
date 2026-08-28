@@ -28,6 +28,7 @@ export class RoomDO {
       try {
         const data = JSON.parse(event.data as string);
 
+        // --- First message: join with role ---
         if (!roleReceived) {
           if (data.type !== 'join' || !data.role) {
             server.send(JSON.stringify({ type: 'error', message: 'First message must be join with role' }));
@@ -84,7 +85,9 @@ export class RoomDO {
           return;
         }
 
-        // Regular messages after join
+        // --- Regular messages after join ---
+
+        // WebRTC signaling
         if (['offer', 'answer', 'ice-candidate'].includes(data.type)) {
           for (const [clientSocket] of this.clients) {
             if (clientSocket !== server) {
@@ -93,33 +96,19 @@ export class RoomDO {
           }
         }
 
-        if (data.type === 'pdf_url') {
-          if (server === this.host) {
-            // Store the URL
-            for (const [clientSocket] of this.clients) {
-              if (clientSocket !== server) {
-                clientSocket.send(JSON.stringify({
-                  type: 'pdf_url',
-                  url: data.url,
-                }));
-              }
+        // TEXT UPDATE: relay to all others
+        if (data.type === 'text_update') {
+          for (const [clientSocket] of this.clients) {
+            if (clientSocket !== server) {
+              clientSocket.send(JSON.stringify({
+                type: 'text_update',
+                content: data.content,
+              }));
             }
           }
         }
 
-        if (data.type === 'viewport') {
-          if (server === this.host) {
-            for (const [clientSocket] of this.clients) {
-              if (clientSocket !== server) {
-                clientSocket.send(JSON.stringify({
-                  type: 'viewport',
-                  viewport: data.viewport,
-                }));
-              }
-            }
-          }
-        }
-
+        // Host leaving
         if (data.type === 'host_leaving') {
           if (server === this.host) {
             this.host = null;
@@ -167,31 +156,6 @@ export class RoomDO {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-
-    // Proxy endpoint for PDF files
-    if (url.pathname === '/proxy/pdf') {
-      const pdfUrl = url.searchParams.get('url');
-      if (!pdfUrl) {
-        return new Response('Missing url parameter', { status: 400 });
-      }
-
-      try {
-        const response = await fetch(pdfUrl);
-        const blob = await response.blob();
-
-        // Return the PDF with proper headers
-        return new Response(blob, {
-          headers: {
-            'Content-Type': 'application/pdf',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, OPTIONS',
-            'Cache-Control': 'public, max-age=3600',
-          },
-        });
-      } catch (error) {
-        return new Response('Failed to fetch PDF', { status: 500 });
-      }
-    }
 
     if (url.pathname === '/ws') {
       const roomName = url.searchParams.get('room') || 'default';
