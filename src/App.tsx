@@ -7,17 +7,11 @@ function App() {
   const [joined, setJoined] = useState(false);
   const [isHost, setIsHost] = useState(false);
 
-  // Editor state
-  const [code, setCode] = useState('// Write your C++ code here\n#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Hello, World!" << endl;\n    return 0;\n}');
-  const [output, setOutput] = useState('');
-  const [isRunning, setIsRunning] = useState(false);
-
   // WebSocket and WebRTC refs
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const debounceTimerRef = useRef<number | null>(null);
 
   const joinRoom = useCallback(async (role: 'host' | 'participant') => {
     if (!meetingId.trim()) {
@@ -28,7 +22,6 @@ function App() {
     setError('');
 
     try {
-      // Request camera/microphone (optional)
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
@@ -57,13 +50,6 @@ function App() {
           setJoined(true);
         }
 
-        // Receive code update from others
-        if (data.type === 'text_update') {
-          console.log('Received code update');
-          setCode(data.content);
-        }
-
-        // WebRTC signaling
         if (data.type === 'peer_joined') {
           console.log('Peer joined');
           await createPeerConnection(stream);
@@ -161,73 +147,12 @@ function App() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-    setCode('');
-    setOutput('');
   };
 
-  // Handle code changes with debounce
-  const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const newCode = e.target.value;
-    setCode(newCode);
-
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-    debounceTimerRef.current = setTimeout(() => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'text_update',
-          content: newCode,
-        }));
-      }
-    }, 300);
-  };
-
-  // Run code using Piston API
-  const runCode = async () => {
-    if (!code.trim()) {
-      setOutput('Error: No code to run.');
-      return;
-    }
-
-    setIsRunning(true);
-    setOutput('Running...');
-
-    try {
-      const response = await fetch('https://emkc.org/api/v2/piston/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          language: 'cpp',
-          version: '10.2.0', // or 'latest'
-          files: [{ content: code }],
-        }),
-      });
-
-      const result = await response.json();
-
-      if (result.run) {
-        const stdout = result.run.stdout || '';
-        const stderr = result.run.stderr || '';
-        const outputText = (stdout + stderr).trim() || '(No output)';
-        setOutput(outputText);
-      } else if (result.message) {
-        setOutput(`Error: ${result.message}`);
-      } else {
-        setOutput('Error: Unexpected response from compiler service.');
-      }
-    } catch (err) {
-      setOutput(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    } finally {
-      setIsRunning(false);
-    }
-  };
-
-  // Join screen
   if (!joined) {
     return (
       <div style={{ padding: '40px', maxWidth: '400px', margin: '0 auto', textAlign: 'center' }}>
-        <h1>Collaborative C++ Editor</h1>
+        <h1>Collaborative C++ Compiler</h1>
         <p style={{ marginBottom: '20px', color: '#666' }}>
           Host a meeting or join an existing one
         </p>
@@ -300,7 +225,6 @@ function App() {
     );
   }
 
-  // Editor screen
   return (
     <div style={{ padding: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
@@ -327,68 +251,24 @@ function App() {
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
-        <button
-          onClick={runCode}
-          disabled={isRunning}
-          style={{
-            padding: '10px 24px',
-            background: isRunning ? '#ccc' : '#4caf50',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: isRunning ? 'default' : 'pointer',
-            fontSize: '16px',
-          }}
-        >
-          {isRunning ? 'Running...' : '▶ Run'}
-        </button>
-        <span style={{ fontSize: '14px', color: '#666', alignSelf: 'center' }}>
-          {code.length} characters
-        </span>
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-        {/* Editor */}
-        <textarea
-          value={code}
-          onChange={handleCodeChange}
-          placeholder="Write your C++ code here..."
-          style={{
-            width: '100%',
-            height: '350px',
-            padding: '15px',
-            fontSize: '16px',
-            fontFamily: 'monospace',
-            border: '1px solid #ccc',
-            borderRadius: '8px',
-            resize: 'vertical',
-            backgroundColor: '#1e1e1e',
-            color: '#d4d4d4',
-            boxSizing: 'border-box',
-            tabSize: 4,
-          }}
+      <div style={{
+        border: '1px solid #ddd',
+        borderRadius: '8px',
+        overflow: 'hidden',
+        background: '#fff',
+        marginBottom: '15px',
+      }}>
+        <iframe
+          src="https://emalawi19-cpp-online-compiler.hf.space"
+          frameBorder="0"
+          width="100%"
+          height="600px"
+          title="C++ Compiler"
+          style={{ display: 'block' }}
+          allow="microphone; camera; clipboard-write;"
         />
-
-        {/* Output */}
-        <div style={{
-          border: '1px solid #ccc',
-          borderRadius: '8px',
-          padding: '12px',
-          backgroundColor: '#f5f5f5',
-          minHeight: '100px',
-          maxHeight: '200px',
-          overflow: 'auto',
-          fontFamily: 'monospace',
-          fontSize: '14px',
-          whiteSpace: 'pre-wrap',
-        }}>
-          <strong>Output:</strong>
-          <pre style={{ margin: '8px 0 0', padding: 0 }}>{output || 'Click "Run" to execute your code.'}</pre>
-        </div>
       </div>
 
-      {/* Video feeds (optional) */}
       <div style={{ display: 'flex', gap: '20px', marginTop: '20px' }}>
         <div style={{ flex: 1 }}>
           <h3>You</h3>
