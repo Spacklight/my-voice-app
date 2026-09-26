@@ -1,5 +1,47 @@
 import { useState, useRef, useCallback } from 'react';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import './App.css';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+
+async function renderPdfToImages(file: File): Promise<string[]> {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const images: string[] = [];
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 1.5 });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) continue;
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    images.push(canvas.toDataURL('image/jpeg', 0.8));
+  }
+
+  return images;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const navBtnStyle: React.CSSProperties = {
+  padding: '6px 14px',
+  borderRadius: '4px',
+  border: '1px solid #ccc',
+  background: '#fff',
+  cursor: 'pointer',
+  fontSize: '14px',
+};
 
 function App() {
   const [meetingId, setMeetingId] = useState('');
@@ -11,6 +53,12 @@ function App() {
   const [camOn, setCamOn] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
   const [screenShareError, setScreenShareError] = useState('');
+
+  // Shared document (PDF/image) state
+  const [docPages, setDocPages] = useState<string[]>([]);
+  const [docPageIndex, setDocPageIndex] = useState(0);
+  const [docLoading, setDocLoading] = useState(false);
+  const [docError, setDocError] = useState('');
 
   // WebSocket and WebRTC refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -91,7 +139,6 @@ function App() {
           setIsHost(true);
         }
 
-        // --- Fix: the Worker sends this on disconnect but it was never handled ---
         if (data.type === 'peer_left') {
           console.log('Peer left the room');
           setPartnerLeft(true);
@@ -108,6 +155,18 @@ function App() {
               localVideoRef.current.srcObject = localStreamRef.current;
             }
           }
+        }
+
+        // Host shared a new document — everyone (including late joiners) receives this
+        if (data.type === 'doc_share') {
+          setDocPages(data.pages);
+          setDocPageIndex(data.page ?? 0);
+          setDocError('');
+        }
+
+        // Host navigated to a different page of the current document
+        if (data.type === 'doc_nav') {
+          setDocPageIndex(data.page);
         }
       };
 
@@ -184,14 +243,12 @@ function App() {
     screenStream.getTracks().forEach(t => t.stop());
     screenStreamRef.current = null;
 
-    // Swap the outgoing video back to the camera track
     const cameraTrack = localStreamRef.current?.getVideoTracks()[0] ?? null;
     const videoSender = pcRef.current?.getSenders().find(s => s.track?.kind === 'video');
     if (videoSender && cameraTrack) {
       await videoSender.replaceTrack(cameraTrack);
     }
 
-    // Restore the local preview to the camera
     if (localVideoRef.current && localStreamRef.current) {
       localVideoRef.current.srcObject = localStreamRef.current;
     }
@@ -211,19 +268,15 @@ function App() {
       screenStreamRef.current = screenStream;
       const screenTrack = screenStream.getVideoTracks()[0];
 
-      // Replace the outgoing camera track with the screen track
       const videoSender = pcRef.current.getSenders().find(s => s.track?.kind === 'video');
       if (videoSender) {
         await videoSender.replaceTrack(screenTrack);
       }
 
-      // Show the shared screen in your own preview too
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = screenStream;
       }
 
-      // If the user stops sharing via the browser's own "Stop sharing" control,
-      // fall back to the camera automatically
       screenTrack.onended = () => {
         stopScreenShare();
       };
@@ -243,6 +296,45 @@ function App() {
     }
   };
 
+  // --- Document sharing (host only) ---
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setDocError('');
+    setDocLoading(true);
+
+    try {
+      const fileArray = Array.from(files);
+      const pdfFile = fileArray.find(f => f.type === 'application/pdf');
+      const pages = pdfFile
+        ? await renderPdfToImages(pdfFile)
+        : await Promise.all(fileArray.map(readFileAsDataUrl));
+
+      if (pages.length === 0) {
+        setDocError('No pages could be loaded from that file.');
+        return;
+      }
+
+      setDocPages(pages);
+      setDocPageIndex(0);
+      wsRef.current?.send(JSON.stringify({ type: 'doc_share', pages, page: 0 }));
+    } catch (err) {
+      console.error(err);
+      setDocError('Could not load that file. Try a different PDF or image.');
+    } finally {
+      setDocLoading(false);
+      e.target.value = '';
+    }
+  };
+
+  const goToDocPage = (index: number) => {
+    if (index < 0 || index >= docPages.length) return;
+    setDocPageIndex(index);
+    wsRef.current?.send(JSON.stringify({ type: 'doc_nav', page: index }));
+  };
+
   const leaveRoom = () => {
     if (isHost) {
       wsRef.current?.send(JSON.stringify({ type: 'host_leaving' }));
@@ -257,6 +349,9 @@ function App() {
     setCamOn(true);
     setScreenSharing(false);
     setScreenShareError('');
+    setDocPages([]);
+    setDocPageIndex(0);
+    setDocError('');
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach(t => t.stop());
       screenStreamRef.current = null;
@@ -276,7 +371,7 @@ function App() {
   if (!joined) {
     return (
       <div style={{ padding: '40px', maxWidth: '400px', margin: '0 auto', textAlign: 'center' }}>
-        <h1>Collaborative C++ Compiler</h1>
+        <h1>Collaborative Meeting Room</h1>
         <p style={{ marginBottom: '20px', color: '#666' }}>
           Host a meeting or join an existing one
         </p>
@@ -375,7 +470,6 @@ function App() {
         </button>
       </div>
 
-      {/* New: shows up when the Worker reports the other side disconnected */}
       {partnerLeft && (
         <div style={{
           background: '#fff3e0',
@@ -389,22 +483,83 @@ function App() {
         </div>
       )}
 
+      {/* Document viewer replaces the old compiler iframe */}
       <div style={{
         border: '1px solid #ddd',
         borderRadius: '8px',
         overflow: 'hidden',
         background: '#fff',
         marginBottom: '15px',
+        minHeight: '300px',
       }}>
-        <iframe
-          src="https://emalawi19-cpp-online-compiler.hf.space"
-          frameBorder="0"
-          width="100%"
-          height="600px"
-          title="C++ Compiler"
-          style={{ display: 'block' }}
-          allow="microphone; camera; clipboard-write;"
-        />
+        {isHost && (
+          <div style={{
+            padding: '12px',
+            borderBottom: docPages.length > 0 ? '1px solid #eee' : 'none',
+            display: 'flex',
+            gap: '10px',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+          }}>
+            <label style={{
+              padding: '8px 14px',
+              background: '#1976d2',
+              color: '#fff',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px',
+            }}>
+              📎 Select File or Pictures
+              <input
+                type="file"
+                accept="application/pdf,image/*"
+                multiple
+                onChange={handleFileSelect}
+                style={{ display: 'none' }}
+              />
+            </label>
+
+            {docLoading && <span style={{ color: '#666', fontSize: '14px' }}>Loading…</span>}
+
+            {docPages.length > 0 && (
+              <>
+                <button
+                  onClick={() => goToDocPage(docPageIndex - 1)}
+                  disabled={docPageIndex === 0}
+                  style={navBtnStyle}
+                >
+                  ◀ Prev
+                </button>
+                <span style={{ fontSize: '14px', color: '#666' }}>
+                  Page {docPageIndex + 1} / {docPages.length}
+                </span>
+                <button
+                  onClick={() => goToDocPage(docPageIndex + 1)}
+                  disabled={docPageIndex === docPages.length - 1}
+                  style={navBtnStyle}
+                >
+                  Next ▶
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {docError && (
+          <p style={{ color: '#c62828', padding: '10px 14px', margin: 0 }}>{docError}</p>
+        )}
+
+        {docPages.length > 0 ? (
+          <img
+            src={docPages[docPageIndex]}
+            alt={`Page ${docPageIndex + 1}`}
+            style={{ width: '100%', display: 'block' }}
+          />
+        ) : (
+          <p style={{ color: '#999', textAlign: 'center', padding: '60px 20px' }}>
+            {isHost ? 'Select a PDF or picture above to share it with the meeting.' : 'Waiting for the host to share a document…'}
+          </p>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: '20px', marginTop: '20px' }}>
@@ -418,7 +573,6 @@ function App() {
         </div>
       </div>
 
-      {/* New: mic / camera controls */}
       <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px' }}>
         <button
           onClick={toggleMic}

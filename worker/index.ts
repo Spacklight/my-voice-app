@@ -7,6 +7,10 @@ export class RoomDO {
   private clients: Map<WebSocket, string> = new Map();
   private host: WebSocket | null = null;
 
+  // Currently shared document (PDF/image pages), if any. Lets a participant
+  // who joins mid-meeting see what's already being shown instead of a blank screen.
+  private sharedDoc: { pages: string[]; page: number } | null = null;
+
   constructor(private state: DurableObjectState, env: Env) {
     this.roomName = state.id.toString();
   }
@@ -77,6 +81,14 @@ export class RoomDO {
                 clientSocket.send(JSON.stringify({ type: 'peer_joined' }));
               }
             }
+            // Late-joiner sync: send whatever document is currently shared
+            if (this.sharedDoc) {
+              server.send(JSON.stringify({
+                type: 'doc_share',
+                pages: this.sharedDoc.pages,
+                page: this.sharedDoc.page,
+              }));
+            }
             return;
           }
 
@@ -104,6 +116,30 @@ export class RoomDO {
                 type: 'text_update',
                 content: data.content,
               }));
+            }
+          }
+        }
+
+        // Document sharing — host only. A participant sending these is silently ignored
+        // so the restriction can't be bypassed by a modified client.
+        if (data.type === 'doc_share') {
+          if (this.clients.get(server) !== 'host') return;
+          this.sharedDoc = { pages: data.pages, page: data.page ?? 0 };
+          for (const [clientSocket] of this.clients) {
+            if (clientSocket !== server) {
+              clientSocket.send(JSON.stringify({ type: 'doc_share', pages: data.pages, page: this.sharedDoc.page }));
+            }
+          }
+        }
+
+        if (data.type === 'doc_nav') {
+          if (this.clients.get(server) !== 'host') return;
+          if (this.sharedDoc) {
+            this.sharedDoc.page = data.page;
+          }
+          for (const [clientSocket] of this.clients) {
+            if (clientSocket !== server) {
+              clientSocket.send(JSON.stringify({ type: 'doc_nav', page: data.page }));
             }
           }
         }
