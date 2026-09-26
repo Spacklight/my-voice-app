@@ -6,10 +6,14 @@ function App() {
   const [error, setError] = useState('');
   const [joined, setJoined] = useState(false);
   const [isHost, setIsHost] = useState(false);
+  const [partnerLeft, setPartnerLeft] = useState(false);
+  const [micOn, setMicOn] = useState(true);
+  const [camOn, setCamOn] = useState(true);
 
   // WebSocket and WebRTC refs
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
@@ -23,6 +27,7 @@ function App() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
@@ -52,6 +57,7 @@ function App() {
 
         if (data.type === 'peer_joined') {
           console.log('Peer joined');
+          setPartnerLeft(false);
           await createPeerConnection(stream);
           const offer = await pcRef.current!.createOffer();
           await pcRef.current!.setLocalDescription(offer);
@@ -60,6 +66,7 @@ function App() {
 
         if (data.type === 'offer') {
           console.log('Received offer');
+          setPartnerLeft(false);
           await createPeerConnection(stream);
           await pcRef.current!.setRemoteDescription({ type: 'offer', sdp: data.sdp });
           const answer = await pcRef.current!.createAnswer();
@@ -80,12 +87,24 @@ function App() {
         if (data.type === 'become_host') {
           setIsHost(true);
         }
+
+        // --- Fix: the Worker sends this on disconnect but it was never handled ---
+        if (data.type === 'peer_left') {
+          console.log('Peer left the room');
+          setPartnerLeft(true);
+          pcRef.current?.close();
+          pcRef.current = null;
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = null;
+          }
+        }
       };
 
       ws.onclose = () => {
         console.log('WebSocket closed');
         setJoined(false);
         setIsHost(false);
+        setPartnerLeft(false);
         pcRef.current?.close();
         pcRef.current = null;
       };
@@ -131,6 +150,22 @@ function App() {
     return pc;
   };
 
+  const toggleMic = () => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    const next = !micOn;
+    stream.getAudioTracks().forEach(track => { track.enabled = next; });
+    setMicOn(next);
+  };
+
+  const toggleCam = () => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    const next = !camOn;
+    stream.getVideoTracks().forEach(track => { track.enabled = next; });
+    setCamOn(next);
+  };
+
   const leaveRoom = () => {
     if (isHost) {
       wsRef.current?.send(JSON.stringify({ type: 'host_leaving' }));
@@ -140,8 +175,14 @@ function App() {
     pcRef.current = null;
     setJoined(false);
     setIsHost(false);
-    if (localVideoRef.current && localVideoRef.current.srcObject) {
-      (localVideoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+    setPartnerLeft(false);
+    setMicOn(true);
+    setCamOn(true);
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+    }
+    if (localVideoRef.current) {
       localVideoRef.current.srcObject = null;
     }
     if (remoteVideoRef.current) {
@@ -251,6 +292,20 @@ function App() {
         </button>
       </div>
 
+      {/* New: shows up when the Worker reports the other side disconnected */}
+      {partnerLeft && (
+        <div style={{
+          background: '#fff3e0',
+          color: '#e65100',
+          padding: '10px 14px',
+          borderRadius: '4px',
+          marginBottom: '15px',
+          border: '1px solid #ffcc80',
+        }}>
+          🔌 The other participant has left the meeting.
+        </div>
+      )}
+
       <div style={{
         border: '1px solid #ddd',
         borderRadius: '8px',
@@ -278,6 +333,38 @@ function App() {
           <h3>Remote</h3>
           <video ref={remoteVideoRef} autoPlay style={{ width: '100%', maxWidth: '300px', background: '#222' }} />
         </div>
+      </div>
+
+      {/* New: mic / camera controls */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px' }}>
+        <button
+          onClick={toggleMic}
+          style={{
+            padding: '10px 18px',
+            borderRadius: '24px',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '15px',
+            background: micOn ? '#eeeeee' : '#d32f2f',
+            color: micOn ? '#333' : '#fff',
+          }}
+        >
+          {micOn ? '🎤 Mute' : '🔇 Unmute'}
+        </button>
+        <button
+          onClick={toggleCam}
+          style={{
+            padding: '10px 18px',
+            borderRadius: '24px',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '15px',
+            background: camOn ? '#eeeeee' : '#d32f2f',
+            color: camOn ? '#333' : '#fff',
+          }}
+        >
+          {camOn ? '📷 Stop Video' : '📷 Start Video'}
+        </button>
       </div>
     </div>
   );
