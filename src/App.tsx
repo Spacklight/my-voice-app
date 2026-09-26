@@ -9,11 +9,14 @@ function App() {
   const [partnerLeft, setPartnerLeft] = useState(false);
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
+  const [screenSharing, setScreenSharing] = useState(false);
+  const [screenShareError, setScreenShareError] = useState('');
 
   // WebSocket and WebRTC refs
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
@@ -97,6 +100,14 @@ function App() {
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = null;
           }
+          if (screenStreamRef.current) {
+            screenStreamRef.current.getTracks().forEach(t => t.stop());
+            screenStreamRef.current = null;
+            setScreenSharing(false);
+            if (localVideoRef.current && localStreamRef.current) {
+              localVideoRef.current.srcObject = localStreamRef.current;
+            }
+          }
         }
       };
 
@@ -166,6 +177,72 @@ function App() {
     setCamOn(next);
   };
 
+  const stopScreenShare = useCallback(async () => {
+    const screenStream = screenStreamRef.current;
+    if (!screenStream) return;
+
+    screenStream.getTracks().forEach(t => t.stop());
+    screenStreamRef.current = null;
+
+    // Swap the outgoing video back to the camera track
+    const cameraTrack = localStreamRef.current?.getVideoTracks()[0] ?? null;
+    const videoSender = pcRef.current?.getSenders().find(s => s.track?.kind === 'video');
+    if (videoSender && cameraTrack) {
+      await videoSender.replaceTrack(cameraTrack);
+    }
+
+    // Restore the local preview to the camera
+    if (localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+    }
+
+    setScreenSharing(false);
+  }, []);
+
+  const startScreenShare = async () => {
+    if (!pcRef.current) {
+      setScreenShareError('Waiting for the other participant to connect first.');
+      return;
+    }
+    setScreenShareError('');
+
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      screenStreamRef.current = screenStream;
+      const screenTrack = screenStream.getVideoTracks()[0];
+
+      // Replace the outgoing camera track with the screen track
+      const videoSender = pcRef.current.getSenders().find(s => s.track?.kind === 'video');
+      if (videoSender) {
+        await videoSender.replaceTrack(screenTrack);
+      }
+
+      // Show the shared screen in your own preview too
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = screenStream;
+      }
+
+      // If the user stops sharing via the browser's own "Stop sharing" control,
+      // fall back to the camera automatically
+      screenTrack.onended = () => {
+        stopScreenShare();
+      };
+
+      setScreenSharing(true);
+    } catch (err) {
+      console.error(err);
+      setScreenShareError('Screen share was cancelled or is not supported on this browser.');
+    }
+  };
+
+  const toggleScreenShare = () => {
+    if (screenSharing) {
+      stopScreenShare();
+    } else {
+      startScreenShare();
+    }
+  };
+
   const leaveRoom = () => {
     if (isHost) {
       wsRef.current?.send(JSON.stringify({ type: 'host_leaving' }));
@@ -178,6 +255,12 @@ function App() {
     setPartnerLeft(false);
     setMicOn(true);
     setCamOn(true);
+    setScreenSharing(false);
+    setScreenShareError('');
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(t => t.stop());
+      screenStreamRef.current = null;
+    }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(t => t.stop());
       localStreamRef.current = null;
@@ -365,7 +448,27 @@ function App() {
         >
           {camOn ? '📷 Stop Video' : '📷 Start Video'}
         </button>
+        <button
+          onClick={toggleScreenShare}
+          style={{
+            padding: '10px 18px',
+            borderRadius: '24px',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '15px',
+            background: screenSharing ? '#1976d2' : '#eeeeee',
+            color: screenSharing ? '#fff' : '#333',
+          }}
+        >
+          {screenSharing ? '🖥️ Stop Sharing' : '🖥️ Share Screen'}
+        </button>
       </div>
+
+      {screenShareError && (
+        <p style={{ textAlign: 'center', color: '#c62828', marginTop: '10px', fontSize: '14px' }}>
+          {screenShareError}
+        </p>
+      )}
     </div>
   );
 }
